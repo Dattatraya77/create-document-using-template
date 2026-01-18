@@ -12,6 +12,7 @@ from docxtpl import DocxTemplate, InlineImage
 from docx.shared import Mm
 import os
 from django.conf import settings
+from django.utils import timezone
 
 
 class TemplateTrainViewSet(viewsets.ModelViewSet):
@@ -510,6 +511,150 @@ class DocumentCreateViewSet(viewsets.ViewSet):
         )
 
 
+class DocumentUpdateViewSet(viewsets.ViewSet):
+    permission_classes = [IsAuthenticated]
+
+    def extract_metadata(self, request):
+        metadata = {}
+
+        if isinstance(request.data.get("metadata"), dict):
+            metadata = request.data.get("metadata", {})
+        else:
+            for key, value in request.data.items():
+                if key.startswith("metadata[") and key.endswith("]"):
+                    clean_key = key[len("metadata["):-1]
+                    metadata[clean_key] = value
+
+        return metadata
+
+    def update(self, request, pk=None):
+        """
+        pk = doc_id
+        """
+        user = request.user
+        metadata_payload = self.extract_metadata(request)
+
+        try:
+            document = CreatedDocument.objects.select_related(
+                "doc_matched_template"
+            ).get(doc_id=pk)
+        except CreatedDocument.DoesNotExist:
+            return Response(
+                {"success": False, "error": "Document not found"},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        template = document.doc_matched_template
+
+        template_metadata = TemplateMetaData.objects.filter(
+            temp_metadata=template
+        ).select_related("temp_meta_key")
+
+        meta_key_map = {
+            tm.temp_meta_key.metadata_key: tm.temp_meta_key
+            for tm in template_metadata
+        }
+
+        tpl = DocxTemplate(
+            os.path.join(settings.MEDIA_ROOT, str(template.upload_template))
+        )
+
+        context = {}
+
+        for key, meta_key in meta_key_map.items():
+            meta_type = meta_key.metadata_type
+
+            # 🖼 IMAGE METADATA
+            if meta_type == "image":
+                if key not in request.FILES:
+                    # keep old image if not re-uploaded
+                    old_value = MetadataValue.objects.filter(
+                        meta_key=meta_key,
+                        meta_created_doc=document
+                    ).first()
+
+                    if old_value:
+                        try:
+                            width_mm = float(key.split("_")[-1].replace("mm", ""))
+                        except Exception:
+                            width_mm = 30
+
+                        context[key] = InlineImage(
+                            tpl,
+                            os.path.join(settings.MEDIA_ROOT, old_value.meta_upload_value),
+                            width=Mm(width_mm)
+                        )
+                    else:
+                        context[key] = ""
+                    continue
+
+                image_file = request.FILES[key]
+                image_path = default_storage.save(
+                    f"images/{image_file.name}", image_file
+                )
+
+                try:
+                    width_mm = float(key.split("_")[-1].replace("mm", ""))
+                except Exception:
+                    width_mm = 30
+
+                context[key] = InlineImage(
+                    tpl,
+                    os.path.join(settings.MEDIA_ROOT, image_path),
+                    width=Mm(width_mm)
+                )
+
+                MetadataValue.objects.update_or_create(
+                    meta_key=meta_key,
+                    meta_created_doc=document,
+                    defaults={"meta_upload_value": image_path}
+                )
+                continue
+
+            # 📝 TEXT / DATE / INTEGER
+            value = metadata_payload.get(key)
+
+            if value is None:
+                old_value = MetadataValue.objects.filter(
+                    meta_key=meta_key,
+                    meta_created_doc=document
+                ).first()
+                context[key] = old_value.meta_upload_value if old_value else ""
+                continue
+
+            context[key] = value
+
+            MetadataValue.objects.update_or_create(
+                meta_key=meta_key,
+                meta_created_doc=document,
+                defaults={"meta_upload_value": str(value)}
+            )
+
+        # Re-render document
+        tpl.render(context)
+
+        file_name = f"{template.temp_title}_{document.doc_id}.docx"
+        relative_path = f"created_document/{file_name}"
+        absolute_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+
+        os.makedirs(os.path.dirname(absolute_path), exist_ok=True)
+        tpl.save(absolute_path)
+
+        document.document = relative_path
+        document.doc_updated_on = timezone.now()
+        document.save(update_fields=["document", "doc_updated_on"])
+
+        return Response(
+            {
+                "success": True,
+                "message": "Document Updated Successfully",
+                "data": {
+                    "doc_id": document.doc_id,
+                    "document_name": document.document_name
+                }
+            },
+            status=status.HTTP_200_OK
+        )
 
 
 
