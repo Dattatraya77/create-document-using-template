@@ -199,6 +199,30 @@ Generated file stored at:
 
 /media/created_document/
 
+🧪 Postman Example (Update – Form Data)
+form-data
+
+metadata[Employee_name_string]: Updated Name
+metadata[Company_signatory_string]: New Signatory
+company_logo_30mm: (new logo file)
+
+➡️ If an image is not sent, the old image is reused.
+
+🧪 Postman Example (Update – Raw JSON)
+
+{
+  "metadata": {
+    "Employee_name_string": "Updated Employee",
+    "Title_of_individual_string": "Senior Python Developer"
+  }
+}
+
+📌 Endpoint
+
+PUT /api/update-document/{doc_id}/
+
+PUT /api/update-document/20260118123428266369/
+
 🧱 Internal Architecture
 
 Template
